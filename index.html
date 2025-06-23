@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { margin: 0; background: #333; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { border: 1px solid #000; box-shadow: 0 0 20px rgba(0, 0, 0, 0.5); }
+    </style>
+</head>
+<body>
+    <canvas id="automaton" width="800" height="800"></canvas>
+    <script>
+        const canvas = document.getElementById('automaton');
+        const ctx = canvas.getContext('2d');
+
+        let cellSize = 20;  // Initial cell size
+        const minCellSize = 2; // Minimum cell size to prevent zooming out into nonexistence
+        const maxCellSize = 40; // Maximum cell size for zooming in
+        const greenGrowthLimit = 20; // Limit for green cell growth before flowering
+        let gridSize = Math.floor(canvas.width / cellSize);  // Calculate initial grid size based on cell size
+        const padding = 2; // Add padding between cells
+        let fullGridSize = 2000; // Full grid size, much larger than the viewport
+        let fullGrid = Array.from({ length: fullGridSize }, () => Array(fullGridSize).fill(0));
+        let viewOffsetX = Math.floor((fullGridSize - gridSize) / 2); // Initial centering
+        let viewOffsetY = Math.floor((fullGridSize - gridSize) / 2); // Initial centering
+        let updateCounter = 0;
+
+        // Cell types
+        const EMPTY = 0;
+        const GREEN = 1;
+        const RED = 2;
+        const BLACK = 3;
+        const WATER = 4;
+        const YELLOW = 5; // Flowering cells
+
+        // Color ranges
+        const colorRanges = {
+            [GREEN]: { min: 100, max: 140 },
+            [RED]: { min: 0, max: 20 },
+            [BLACK]: { min: 0, max: 0 },
+            [WATER]: { min: 190, max: 210 },
+            [YELLOW]: { min: 50, max: 60 },
+        };
+
+        // Initialize grid with some random cells
+        for (let i = 0; i < 500; i++) {
+            const x = Math.floor(Math.random() * gridSize) + viewOffsetX;
+            const y = Math.floor(Math.random() * gridSize) + viewOffsetY;
+            fullGrid[y][x] = Math.floor(Math.random() * 4) + 1; // Randomly place different types of cells
+        }
+
+        function drawGrid() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const visibleGridSize = Math.floor(canvas.width / cellSize);
+            for (let y = 0; y < visibleGridSize; y++) {
+                for (let x = 0; x < visibleGridSize; x++) {
+                    const gridX = x + viewOffsetX;
+                    const gridY = y + viewOffsetY;
+                    const cellType = fullGrid[gridY][gridX];
+                    if (cellType) {
+                        const hue = getRandomHue(colorRanges[cellType]);
+                        const color = `hsl(${hue}, 100%, 50%)`;
+                        ctx.fillStyle = color;
+                        ctx.beginPath();
+                        ctx.roundRect(
+                            x * cellSize + padding / 2,
+                            y * cellSize + padding / 2,
+                            cellSize - padding,
+                            cellSize - padding,
+                            cellSize / 4 // Rounded corners
+                        );
+                        ctx.fill();
+                    }
+                }
+            }
+        }
+
+        function getRandomHue({ min, max }) {
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+
+        function updateGrid() {
+            const newGrid = fullGrid.map(arr => [...arr]);
+            let activeCells = [];
+            let edgeCells = 0;
+            let extinguishedFires = [];
+
+            for (let y = 1; y < fullGridSize - 1; y++) {
+                for (let x = 1; x < fullGridSize - 1; x++) {
+                    switch (fullGrid[y][x]) {
+                        case GREEN:
+                            // Green cell logic: grows left and up if near water or cells beneath, feeds on black cells
+                            // Dies if surrounded by too many other green cells or grows next to another green cell on the x-axis
+                            const nearbyGreens = [
+                                fullGrid[y][x - 1] === GREEN,
+                                fullGrid[y][x + 1] === GREEN,
+                                fullGrid[y - 1][x] === GREEN,
+                                fullGrid[y + 1][x] === GREEN,
+                            ].filter(Boolean).length;
+
+                            if (nearbyGreens > 2 || fullGrid[y][x - 1] === GREEN) {
+                                newGrid[y][x] = EMPTY; // Green cell dies
+                            } else if (
+                                (fullGrid[y][x - 1] === WATER || fullGrid[y - 1][x] === WATER) ||
+                                (fullGrid[y + 1][x] !== EMPTY)
+                            ) {
+                                if (fullGrid[y][x - 1] === EMPTY || fullGrid[y][x - 1] === BLACK) newGrid[y][x - 1] = GREEN;
+                                if (fullGrid[y - 1][x] === EMPTY || fullGrid[y - 1][x] === BLACK) newGrid[y - 1][x] = GREEN;
+                            }
+                            // Green cells feed on black cells
+                            if (fullGrid[y][x - 1] === BLACK) newGrid[y][x - 1] = GREEN;
+                            if (fullGrid[y - 1][x] === BLACK) newGrid[y - 1][x] = GREEN;
+
+                            // Green cells flower if they hit the growth limit
+                            const greenClusterSize = getClusterSize(x, y, fullGrid, GREEN);
+                            if (greenClusterSize >= greenGrowthLimit) {
+                                flowerGreenCells(x, y, newGrid);
+                            }
+                            break;
+
+                        case RED:
+                            // Red cell logic: burns quickly through yellow flowers, slowly through green cells
+                            const directions = [
+                                { dx: -1, dy: 0 }, { dx: 1, dy: 0 },
+                                { dx: 0, dy: -1 }, { dx: 0, dy: 1 },
+                            ];
+
+                            let burned = false;
+                            for (const { dx, dy } of directions) {
+                                const nx = x + dx;
+                                const ny = y + dy;
+
+                                if (fullGrid[ny] && fullGrid[ny][nx] === YELLOW) {
+                                    newGrid[ny][nx] = RED;
+                                    newGrid[y][x] = EMPTY;
+                                    burned = true;
+                                } else if (fullGrid[ny] && fullGrid[ny][nx] === GREEN && Math.random() < 0.1) {
+                                    newGrid[ny][nx] = RED;
+                                    newGrid[y][x] = EMPTY;
+                                    burned = true;
+                                } else if (fullGrid[ny] && fullGrid[ny][nx] === EMPTY && !burned) {
+                                    newGrid[ny][nx] = RED;
+                                    newGrid[y][x] = EMPTY;
+                                    burned = true;
+                                }
+                            }
+
+                            if (!burned) {
+                                extinguishedFires.push({ x, y });
+                                newGrid[y][x] = EMPTY;
+                            }
+                            break;
+
+                        case BLACK:
+                            // Black cell logic: kills anything it touches
+                            const blackDirections = [
+                                { dx: -1, dy: 0 }, { dx: 1, dy: 0 },
+                                { dx: 0, dy: -1 }, { dx: 0, dy: 1 },
+                            ];
+                            let destroyed = false;
+                            for (const { dx, dy } of blackDirections) {
+                                const nx = x + dx;
+                                const ny = y + dy;
+                                if (fullGrid[ny] && fullGrid[ny][nx] !== EMPTY && fullGrid[ny][nx] !== BLACK) {
+                                    newGrid[ny][nx] = EMPTY;
+                                    newGrid[y][x] = EMPTY; // Black cell destroys itself too
+                                    destroyed = true;
+                                    break;
+                                }
+                            }
+                            // Black cells move upward if not destroyed
+                            if (!destroyed && fullGrid[y - 1][x] === EMPTY) {
+                                newGrid[y - 1][x] = BLACK;
+                                newGrid[y][x] = EMPTY;
+                            }
+                            break;
+
+                        case WATER:
+                            // Water cell logic: moves down, feeds on red cells, disappears near floor and appears at top
+                            if (fullGrid[y + 1][x] === EMPTY || fullGrid[y + 1][x] === RED) {
+                                newGrid[y + 1][x] = WATER;
+                                newGrid[y][x] = EMPTY;
+                            } else if (y >= fullGridSize - 5) { // Near the floor
+                                newGrid[y][x] = EMPTY; // Disappear
+                                const newX = Math.floor(Math.random() * fullGridSize);
+                                newGrid[0][newX] = WATER; // Reappear at the top
+                            }
+                            break;
+                    }
+
+                    if (newGrid[y][x] !== EMPTY) {
+                        activeCells.push({ x, y });
+
+                        // Check if the cell is near the edge of the visible grid
+                        if (x - viewOffsetX < 2 || x - viewOffsetX >= gridSize - 2 ||
+                            y - viewOffsetY < 2 || y - viewOffsetY >= gridSize - 2) {
+                            edgeCells++;
+                        }
+                    }
+                }
+            }
+
+            // Handle extinguished fires: start a new fire at the nearest flower
+            extinguishedFires.forEach(({ x, y }) => {
+                const nearestFlower = findNearestFlower(x, y, newGrid);
+                if (nearestFlower) {
+                    newGrid[nearestFlower.y][nearestFlower.x] = RED;
+                }
+            });
+
+            fullGrid = newGrid;
+
+            // Trigger zoom out if the automaton hits the bounds and density is high
+            if (edgeCells > 0.2 * activeCells.length && cellSize > minCellSize) {
+                zoomOut(activeCells);
+            }
+
+            // Every 30 updates, add a new blue cell at the top
+            updateCounter++;
+            if (updateCounter % 30 === 0) {
+                const x = Math.floor(Math.random() * fullGridSize);
+                newGrid[0][x] = WATER;
+            }
+        }
+
+        function findNearestFlower(x, y, grid) {
+            let nearest = null;
+            let minDistance = Infinity;
+
+            for (let j = 0; j < fullGridSize; j++) {
+                for (let i = 0; i < fullGridSize; i++) {
+                    if (grid[j][i] === YELLOW) {
+                        const distance = Math.abs(i - x) + Math.abs(j - y);
+                        if (distance < minDistance) {
+                            minDistance = distance;
+                            nearest = { x: i, y: j };
+                        }
+                    }
+                }
+            }
+
+            return nearest;
+        }
+
+        function getClusterSize(x, y, grid, type) {
+            const directions = [
+                { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+                { dx: 0, dy: 1 }, { dx: 0, dy: -1 },
+            ];
+            let size = 0;
+            let visited = new Set();
+            let queue = [{ x, y }];
+
+            while (queue.length > 0) {
+                const { x: cx, y: cy } = queue.shift();
+                const key = `${cx},${cy}`;
+
+                if (!visited.has(key) && grid[cy] && grid[cy][cx] === type) {
+                    visited.add(key);
+                    size++;
+                    for (const { dx, dy } of directions) {
+                        queue.push({ x: cx + dx, y: cy + dy });
+                    }
+                }
+            }
+
+            return size;
+        }
+
+        function flowerGreenCells(x, y, grid) {
+            grid[y][x] = YELLOW; // Turn the topmost green cell into a yellow flower
+            const directions = [
+                { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+                { dx: 0, dy: 1 }, { dx: 0, dy: -1 },
+                { dx: 1, dy: 1 }, { dx: -1, dy: -1 },
+            ];
+            let spawned = 0;
+
+            for (const { dx, dy } of directions) {
+                const nx = x + dx;
+                const ny = y + dy;
+                if (grid[ny] && grid[ny][nx] === EMPTY) {
+                    grid[ny][nx] = GREEN;
+                    spawnWaterNearby(nx, ny, grid);
+                    spawned++;
+                    if (spawned >= 5) break;
+                }
+            }
+        }
+
+        function spawnWaterNearby(x, y, grid) {
+            const directions = [
+                { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+                { dx: 0, dy: 1 }, { dx: 0, dy: -1 },
+            ];
+            for (const { dx, dy } of directions) {
+                const nx = x + dx;
+                const ny = y + dy;
+                if (grid[ny] && grid[ny][nx] === EMPTY) {
+                    grid[ny][nx] = WATER;
+                    break;
+                }
+            }
+        }
+
+        function zoomOut(activeCells) {
+            const zoomFactor = 1.2;
+            cellSize /= zoomFactor;
+            gridSize = Math.floor(canvas.width / cellSize);
+            centerViewport(activeCells);
+        }
+
+        function centerViewport(activeCells) {
+            if (activeCells.length > 0) {
+                const centerX = Math.floor(activeCells.reduce((sum, cell) => sum + cell.x, 0) / activeCells.length);
+                const centerY = Math.floor(activeCells.reduce((sum, cell) => sum + cell.y, 0) / activeCells.length);
+
+                viewOffsetX = Math.max(0, Math.min(centerX - Math.floor(gridSize / 2), fullGridSize - gridSize));
+                viewOffsetY = Math.max(0, Math.min(centerY - Math.floor(gridSize / 2), fullGridSize - gridSize));
+            }
+        }
+
+        function loop() {
+            updateGrid();
+            drawGrid();
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
