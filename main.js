@@ -32,6 +32,7 @@ const CONFIG = {
   simSkipRate: 3,
   updateInterval: 33,
   renderInterval: 16,
+  zoomDebounceMs: 300,
 };
 
 let cellSize = CONFIG.cellSize;
@@ -44,6 +45,7 @@ let revealedX = 0;
 let textCellCount = 0;
 let lastEdgeCells = 0;
 let lastNonEmptyCells = 0;
+let lastZoomTime = 0;
 
 const startTime = performance.now();
 let lastFrameTime = 0;
@@ -504,9 +506,12 @@ function initializeWorker() {
       if (newTextCellCount !== undefined) textCellCount = newTextCellCount;
       if (edgeCells !== undefined) lastEdgeCells = edgeCells;
       if (nonEmptyCells !== undefined && nonEmptyCells !== 0) lastNonEmptyCells = nonEmptyCells;
-      if (edgeCells > 1 && gridSize < CONFIG.maxZoomSize) {
+
+      const now = performance.now();
+      if (edgeCells > 1 && gridSize < CONFIG.maxZoomSize && (now - lastZoomTime) > CONFIG.zoomDebounceMs) {
         zoomOut(edgeCells);
         centerOnTextArea();
+        lastZoomTime = now;
       }
 
       pendingUpdate = false;
